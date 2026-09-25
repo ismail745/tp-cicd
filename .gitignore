@@ -1,3 +1,28 @@
-.gradle/
-build/
-.DS_Store
+# 1. Tout ignorer par défaut à la racine
+/*
+
+# 2. Ne pas ignorer le fichier .gitignore lui-même
+!.gitignore
+
+# 3. Fichiers de configuration et de documentation du projet
+!build.gradle
+!settings.gradle
+!gradlew
+!gradlew.bat
+!README.md
+!LICENSE
+
+# 4. Autoriser le wrapper Gradle
+!gradle/
+!gradle/wrapper/
+!gradle/wrapper/gradle-wrapper.jar
+!gradle/wrapper/gradle-wrapper.properties
+
+# 5. Autoriser les sources et les tests
+!src/
+!src/**/
+
+# Autoriser tous les fichiers sources Java et ressources dans src/
+!src/**/*.java
+!src/**/*.properties
+!src/**/*.xml
