@@ -3,6 +3,7 @@
  */
 package simple.gradle.java.app;
 /**
+ * @author DEV1
  * @author DEV2
  */
 public class App {
