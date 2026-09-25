@@ -17,3 +17,4 @@ public class App {
             System.out.println("Sum is " + getSum(4,5));
     }
 }
+
