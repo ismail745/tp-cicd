@@ -1,0 +1,149 @@
+stages:
+  - build
+  - test
+  - package
+  - release
+
+variables:
+  GRADLE_USER_HOME: "$CI_PROJECT_DIR/.gradle"
+  GRADLE_OPTS: "-Dorg.gradle.daemon=false"
+  GITLAB_INTERNAL_URL: "http://gitlab:8080"
+
+default:
+  image: eclipse-temurin:17-jdk
+  before_script:
+    - chmod +x ./gradlew
+  cache:
+    key: gradle-$CI_COMMIT_REF_SLUG
+    paths:
+      - .gradle/caches
+      - .gradle/wrapper
+
+# ===== Etape 6 : chaque commit, sur toute branche =====
+
+build:
+  stage: build
+  script:
+    - ./gradlew installDist
+  artifacts:
+    paths:
+      - build/install/
+    expire_in: 1 day
+  rules:
+    - if: $CI_COMMIT_BRANCH
+
+test:
+  stage: test
+  script:
+    - ./gradlew test
+  artifacts:
+    when: always
+    reports:
+      junit: build/test-results/test/**/TEST-*.xml
+  rules:
+    - if: $CI_COMMIT_BRANCH
+
+# ===== Etape 7 : develop -> image latest (avec cache) =====
+
+docker-develop:
+  stage: package
+  image: docker:27-cli
+  needs: [build, test]
+  cache: []
+  before_script:
+    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+  script:
+    - docker build --provenance=false -t "$CI_REGISTRY_IMAGE:latest" .
+    - docker push "$CI_REGISTRY_IMAGE:latest"
+  rules:
+    - if: $CI_COMMIT_BRANCH == "develop"
+
+# ===== Etape 8 : tag X.Y.Z sur main -> build from scratch =====
+
+check-tag:
+  stage: build
+  image:
+    name: alpine/git
+    entrypoint: [""]
+  cache: []
+  before_script: []
+  variables:
+    GIT_DEPTH: 0
+  script:
+    - |
+      if ! echo "$CI_COMMIT_TAG" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+        echo "Tag '$CI_COMMIT_TAG' invalide (format attendu X.Y.Z) : push annule"
+        exit 1
+      fi
+    - git fetch origin main:refs/remotes/origin/main
+    - |
+      if ! git merge-base --is-ancestor "$CI_COMMIT_SHA" origin/main; then
+        echo "Le commit tague n'est pas sur main : push annule"
+        exit 1
+      fi
+      echo "Tag $CI_COMMIT_TAG valide et present sur main"
+  rules:
+    - if: $CI_COMMIT_TAG
+
+build-release:
+  stage: test
+  needs: [check-tag]
+  cache: []
+  script:
+    - ./gradlew clean installDist test --no-build-cache --refresh-dependencies
+  artifacts:
+    paths:
+      - build/install/
+    reports:
+      junit: build/test-results/test/**/TEST-*.xml
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^[0-9]+\.[0-9]+\.[0-9]+$/
+
+docker-release:
+  stage: package
+  image: docker:27-cli
+  needs: [build-release]
+  cache: []
+  before_script:
+    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+  script:
+    - docker build --no-cache --pull --provenance=false -t "$CI_REGISTRY_IMAGE:$CI_COMMIT_TAG" .
+    - docker push "$CI_REGISTRY_IMAGE:$CI_COMMIT_TAG"
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^[0-9]+\.[0-9]+\.[0-9]+$/
+
+release:
+  stage: release
+  image: alpine:3.20
+  needs: [docker-release]
+  cache: []
+  variables:
+    GIT_DEPTH: 0
+  before_script:
+    - apk add --no-cache git curl jq
+  script:
+    - git fetch --tags --force
+    - |
+      PREV=$(git describe --tags --abbrev=0 "${CI_COMMIT_TAG}^" 2>/dev/null || true)
+      if [ -n "$PREV" ]; then RANGE="$PREV..$CI_COMMIT_TAG"; else RANGE="$CI_COMMIT_TAG"; fi
+      {
+        echo "## Version $CI_COMMIT_TAG"
+        echo ""
+        echo "Image Docker : $CI_REGISTRY_IMAGE:$CI_COMMIT_TAG"
+        echo ""
+        echo "### Changements"
+        git log --no-merges --pretty='- %s (%an)' "$RANGE"
+      } > release_notes.md
+      cat release_notes.md
+      jq -n --arg tag "$CI_COMMIT_TAG" --rawfile desc release_notes.md \
+        '{tag_name: $tag, name: ("Release " + $tag), description: $desc}' > release.json
+      curl --fail -X POST \
+        -H "JOB-TOKEN: $CI_JOB_TOKEN" \
+        -H "Content-Type: application/json" \
+        --data @release.json \
+        "$GITLAB_INTERNAL_URL/api/v4/projects/$CI_PROJECT_ID/releases"
+  artifacts:
+    paths:
+      - release_notes.md
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^[0-9]+\.[0-9]+\.[0-9]+$/

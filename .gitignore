@@ -26,3 +26,6 @@
 !src/**/*.java
 !src/**/*.properties
 !src/**/*.xml
+
+!.gitlab-ci.yml
+!Dockerfile
